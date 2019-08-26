@@ -52,8 +52,57 @@ function newBody(shape, pos, vel, angle, w)
     a.calculateForces = calculateForces
     a.applyForce = applyForce
     a.perim=bodyPerim
+    a.normal=getNormal
     a.velAt=velAt
+    a.isIn=isIn
     return a
+end
+
+function getNormal(a,n)
+    -- get surface normal on perimeter
+    local pn1 = (n-cStep)%1
+    local pn2 = (n+cStep)%1
+    local p1 = a:perim(pn1)
+    local p2 = a:perim(pn2)
+    local delta = vecDiff(p2,p1)
+    local d = math.sqrt(delta.x*delta.x+delta.y*delta.y)
+    local nml = mulVec(delta,1/d)
+    return vec(nml.y,-nml.x)
+end
+
+function isIn(a,p)
+    -- whether point p is inside the shape
+
+    -- get closest point
+    local closest = nil
+    local cd = 0
+    local cn = 0
+    for n=0,1-cStep,cStep do
+        local cp = a:perim(n)
+        local delta = vecDiff(cp,p)
+        local d = math.sqrt(delta.x*delta.x+delta.y*delta.y)
+        if closest == nil or d < cd then
+            cd = d
+            cn = n
+            closest = cp
+        end
+    end
+    local sn = a:normal(cn) -- get surface normal at the closest point
+    local delta = vecDiff(closest,p)
+    --debugVec=delta
+    --debugVecP=p
+    --debugVec2=sn
+    --debugVecP2=closest
+    local dot = dotProd(sn,delta)
+    -- is normal pointing away from the point in question?
+    -- prepare the results
+    local res = {}
+    res.isIn = dot>0
+    res.p = closest
+    res.sn = sn
+    res.delta = delta
+    res.dot = dot
+    return res
 end
 
 function bodyPerim(a, n)
@@ -70,7 +119,7 @@ function velAt(a,pos)
     local delta = vecDiff(a.pos,pos)
     local ang = math.atan2(delta.y,delta.x)
     local d = math.sqrt(delta.x*delta.x+delta.y*delta.y)
-    local v = vec(-math.sin(ang)*d*a.w,-math.cos(ang)*d*a.w)
+    local v = vec(math.sin(ang)*d*a.w,-math.cos(ang)*d*a.w)
     -- add to positional velocity
     return addVec(a.vel, v)
 end
@@ -86,59 +135,91 @@ function applyForce(a, force, pos)
         local delta = vecDiff(a.pos,pos)
         local cross = delta.y*force.x-delta.x*force.y
         a.torque = a.torque + cross
+        -- debug stuf
+        debugVec=delta
+        debugVecP=pos
+        debugVec2=vec(delta.y,-delta.x)
+        debugVecP2=pos
+        debugVec3=mulVec(force,1/10)
+        debugVecP3=pos
+        debugVec4=mulVec(vec(delta.y,-delta.x), cross*10)
+        debugVecP4=pos
     end
 end
 
 function calculateForces(a)
     -- se what forces are currently acting on the body
 
-    -- walls
-    count = 0
-    for n=0,1,cStep do
+    -- collisions
+    for n=0,1-cStep,cStep do
         local p = a:perim(n)
+
+        -- walls
         if p.y < -1 then
             local pen = -p.y-1
             -- penetration spring
-            local f = pen*collisionSpring
+            local f = pen*collisionSpring*a.m
             -- damping
-            local damping = dotProd(mulVec(a:velAt(p),pen*collisionDamping), vec(0,1))
-            a:applyForce(vec(0, -damping+f), p)
-            count = count + 1
+            local damping = dotProd(mulVec(a:velAt(p),pen*collisionDamping), vec(0,1))*a.m
+            local friction = dotProd(mulVec(a:velAt(p),pen*wallFriction), vec(1,0))*a.m
+            a:applyForce(vec(-friction, -damping+f), p)
         elseif p.y > 1 then
             local pen = p.y-1
             -- penetration spring
-            local f = -pen*collisionSpring
+            local f = -pen*collisionSpring*a.m
             -- damping
-            local damping = dotProd(mulVec(a:velAt(p),pen*collisionDamping), vec(0,1))
-            a:applyForce(vec(0, -damping+f), p)
-            count = count + 1
-        elseif p.x < -screenRatio then
+            local damping = dotProd(mulVec(a:velAt(p),pen*collisionDamping), vec(0,1))*a.m
+            local friction = dotProd(mulVec(a:velAt(p),pen*wallFriction), vec(1,0))*a.m
+            a:applyForce(vec(-friction, -damping+f), p)
+        end
+        if p.x < -screenRatio then
             local pen = -p.x-screenRatio
             -- penetration spring
-            local f = pen*collisionSpring
+            local f = pen*collisionSpring*a.m
             -- damping
-            local damping = dotProd(mulVec(a:velAt(p),pen*collisionDamping), vec(1,0))
-            a:applyForce(vec(-damping+f, 0), p)
-            count = count + 1
+            local damping = dotProd(mulVec(a:velAt(p),pen*collisionDamping), vec(1,0))*a.m
+            local friction = dotProd(mulVec(a:velAt(p),pen*wallFriction), vec(0,1))*a.m
+            a:applyForce(vec(-damping+f, -friction), p)
         elseif p.x > screenRatio then
             local pen = p.x-screenRatio
             -- penetration spring
-            local f = -pen*collisionSpring
+            local f = -pen*collisionSpring*a.m
             -- damping
-            local damping = dotProd(mulVec(a:velAt(p),pen*collisionDamping), vec(1,0))
-            a:applyForce(vec(-damping+f, 0), p)
-            count = count + 1
+            local damping = dotProd(mulVec(a:velAt(p),pen*collisionDamping), vec(1,0))*a.m
+            local friction = dotProd(mulVec(a:velAt(p),pen*wallFriction), vec(0,1))*a.m
+            a:applyForce(vec(-damping+f, -friction), p)
+        end
+
+        -- interbody collisions
+        for k,b in pairs(bodies) do
+            if not b~=a then -- only compare against OTHER bodies lol
+                -- if this collision point is inside this other body, COLLISION DETECTED LOL
+                local res = b:isIn(p)
+                if res.isIn then
+                    local pen = res.dot
+
+                    local m = a.m+b.m
+                    -- penetration spring
+                    local f = pen*collisionSpring
+                    ---- damping
+                    local damping = dotProd(mulVec(a:velAt(p),pen*collisionDamping), res.sn)
+                    local friction = dotProd(mulVec(a:velAt(p),pen*friction), vec(res.sn.y,-res.sn.x))
+                    f = f - damping
+                    local fv = mulVec(res.sn,f)
+                    a:applyForce(mulVec(fv, a.m*(b.m/m)), p)
+                    b:applyForce(mulVec(fv,-b.m*(a.m/m)), p)
+                end
+            end
         end
     end
-    if count > 0 then
-        a.force = mulVec(a.force, 1/count)
-    end
+
 
     -- gravity
     a:applyForce(vec(0,-gravity*a.m))
+    --a:applyForce(vec(-gravity*a.m,0))
 
     -- mouse grab
-    if love.mouse.isDown(1) then
+    if a==grabbed and love.mouse.isDown(1) then
         local ang = moffa+a.angle
         local p = vec(math.cos(ang)*moffd+a.pos.x,math.sin(ang)*moffd+a.pos.y)
         local delta = vecDiff(mmouse, p)
@@ -147,21 +228,28 @@ function calculateForces(a)
             local dir = mulVec(delta,-1/d)
             local mf = mulVec(delta,mouseSpring)
             local deltaVel = vecDiff(mouseVel, a:velAt(p))
-            local damping = mulVec(dir, dotProd(deltaVel,dir)*mouseDamping)
+            local dot = dotProd(deltaVel, dir)
+            local proj = mulVec(dir, dot)
+            local damping = mulVec(proj, mouseDamping)
             mf = addVec(mf,damping)
-            a:applyForce(mf,p)
+            a:applyForce(mulVec(mf,a.m),p)
         end
     end
 end
 
 function updateBody(a, dt)
     -- integrate position
-    a.vel = addVec(a.vel, mulVec(a.force, dt/a.m))
+    local accel = mulVec(a.force, 1/a.m)
+    local d = math.sqrt(accel.x*accel.x+accel.y*accel.y)
+    if d>maxAccel then
+        accel = mulVec(accel, maxAccel/d)
+    end
+    a.vel = addVec(a.vel, mulVec(accel, dt))
     a.pos = addVec(a.pos, mulVec(a.vel, dt))
     
     -- integrate angle
-    a.w = a.w + a.torque/a.I * dt
-    a.angle = a.angle + a.w * dt
+    a.w = a.w + math.min(maxAngularAccel, math.max(-maxAngularAccel, a.torque/a.I)) * dt
+    a.angle = (a.angle + a.w * dt)%(2*math.pi)
 
     -- reset accumulators
     a.torque = 0
@@ -170,7 +258,7 @@ end
 
 function drawBody(a)
     local v = {} -- vertices to draw
-    for n=0,1,pStep do
+    for n=0,1-pStep,pStep do
         local p = a:perim(n)
         local pp = mapPixel(p)
         table.insert(v,pp.x)
@@ -180,17 +268,21 @@ function drawBody(a)
     love.graphics.polygon('fill',v)
     love.graphics.setColor(0,0,0)
     love.graphics.polygon('line',v)
+    love.graphics.setColor(0,1,1)
+    love.graphics.setPointSize(8)
+    love.graphics.points(v)
 
     -- show collision shape
-    --local vc = {} -- vertices to draw
-    --for n=0,1,cStep do
-    --    local p = a:perim(n)
-    --    local pp = mapPixel(p)
-    --    table.insert(vc,pp.x)
-    --    table.insert(vc,pp.y)
-    --end
-    --love.graphics.setColor(0,1,0)
-    --love.graphics.polygon('line',vc)
+    local vc = {} -- vertices to draw
+    for n=0,1-cStep,cStep do
+        local p = a:perim(n)
+        local pp = mapPixel(p)
+        table.insert(vc,pp.x)
+        table.insert(vc,pp.y)
+    end
+    love.graphics.setColor(1,0,0)
+    love.graphics.setPointSize(4)
+    love.graphics.points(vc)
 end
 
 function perimCircle(a, n)
@@ -207,7 +299,7 @@ function perimRect(a, n)
     local p = {}
     local nn = n*4
     if nn<1 then
-        p.x=n
+        p.x=nn
         p.y=0
     elseif nn<2 then
         p.x=1
@@ -258,14 +350,23 @@ function love.draw()
         drawBody(v)
     end
 
-    --local x = (love.mouse.getX()/love.graphics.getWidth()*2-1)*screenRatio
-    --local y = -(love.mouse.getY()/love.graphics.getHeight()*2-1)
-    --local v = bodies[1]:velAt(vec(x,y))
-    --love.graphics.setColor(0,0,1)
-    --love.graphics.line(200,200, 200+v.x*100,200+v.y*100)
-    local p0 = mapPixel(mmouse)
-    local p1 = mapPixel(addVec(mmouse,debugVec))
-    love.graphics.line(p0.x,p0.y,p1.x,p1.y)
+    -- debug vectors
+    local p11 = mapPixel(debugVecP)
+    local p21 = mapPixel(debugVecP2)
+    local p31 = mapPixel(debugVecP3)
+    local p41 = mapPixel(debugVecP4)
+    local p1 = mapPixel(addVec(debugVecP,debugVec))
+    local p2 = mapPixel(addVec(debugVecP2,debugVec2))
+    local p3 = mapPixel(addVec(debugVecP3,debugVec3))
+    local p4 = mapPixel(addVec(debugVecP4,debugVec4))
+    love.graphics.setColor(1,0,0)
+    love.graphics.line(p11.x,p11.y,p1.x,p1.y)
+    love.graphics.setColor(0,0.5,0)
+    love.graphics.line(p21.x,p21.y,p2.x,p2.y)
+    love.graphics.setColor(0,0,1)
+    love.graphics.line(p31.x,p31.y,p3.x,p3.y)
+    love.graphics.setColor(0.5,0,1)
+    love.graphics.line(p41.x,p41.y,p4.x,p4.y)
 end
 
 function love.resize(w,h)
@@ -279,21 +380,28 @@ end
 
 function setRes(res)
     -- shape resolution
-    pRes = res or 32
+    pRes = res or 16
     pStep = 1/pRes
 end
 
 function setCollideRes(res)
     -- collision resolution
-    cRes = res or 32
+    cRes = res or 16
     cStep = 1/cRes
 end
 
 function love.mousepressed(x,y,button,istouch)
-    local a = bodies[1]
-    local delta = vecDiff(mmouse,a.pos)
-    moffd = math.sqrt(delta.x*delta.x+delta.y*delta.y)
-    moffa = math.atan2(delta.y,delta.x)-a.angle
+    grabbed = nil
+    for k,a in pairs(bodies) do
+        if a:isIn(mmouse).isIn then
+            grabbed = a
+        end
+    end
+    if grabbed ~=nil then
+        local delta = vecDiff(mmouse,grabbed.pos)
+        moffd = math.sqrt(delta.x*delta.x+delta.y*delta.y)
+        moffa = math.atan2(delta.y,delta.x)-grabbed.angle
+    end
 end
 
 function love.load()
@@ -302,15 +410,23 @@ function love.load()
     setRes()
     setCollideRes()
 
-    gravity = 1
-    collisionSpring = 500
-    collisionDamping = 10
-    mouseSpring = 100
-    mouseDamping = 100
+    epsilon = 0.001
+    gravity = 5
+    collisionSpring = 3000
+    collisionDamping = 75
+    mouseSpring = 25
+    mouseDamping = 5
+    wallFriction = 3000
+    friction = 3000
     sweeps = 10
+    -- ad hoc limits to avoid instability
+    maxAccel = 1000
+    maxAngularAccel = 1000
+    
+    grabbed = nil -- grabbed body w cursor
 
-
-    debugVec = vec()
+    collisionDamping = collisionDamping * math.sqrt(collisionSpring)
+    mouseDamping = mouseDamping * math.sqrt(mouseSpring)
 
     -- mouse
     -- normalized position
@@ -321,15 +437,32 @@ function love.load()
     moffa = 0--angle
 
     -- bodies in world
-    local rect = newBody(newCircle(0.4))
-    bodies = {rect}
+    local body = newBody(newRect(0.4,0.05))
+    local body2 = newBody(newCircle(0.2))
+    local body3 = newBody(newRect(0.3,0.3))
+    body.pos = vec(0.5,0.5)
+    body3.pos = vec(-0.5,0.5)
+    bodies = {body, body2, body3}
 end
 
 function love.update(dt)
+    dt = 1/60--bleh
     local mx = (love.mouse.getX()/love.graphics.getWidth()*2-1)*screenRatio
     local my = -(love.mouse.getY()/love.graphics.getHeight()*2-1)
-    mouseVel = vec(mx-mmouse.x, my-mmouse.y)
+    local mv = vec((mx-mmouse.x)/dt, (my-mmouse.y)/dt)
+    local mvsmooth = 3
+    mouseVel = mulVec(vec(mv.x+mouseVel.x*mvsmooth,mv.y+mouseVel.y*mvsmooth),1/(mvsmooth+1))
     mmouse = vec(mx, my)
+    --debug vecs
+    debugVecP=mmouse
+    debugVecP2=mmouse
+    debugVecP3=mmouse
+    debugVecP4=mmouse
+    debugVec = vec()
+    debugVec2 = vec()
+    debugVec3 = vec()
+    debugVec4 = vec()
+
     -- update bodies in world
     dt = dt/sweeps
     for i=1,sweeps do
@@ -340,4 +473,6 @@ function love.update(dt)
             v:update(dt)
         end
     end
+    ---TEMP for debugging:
+    --bodies[2]:isIn(mmouse)
 end
